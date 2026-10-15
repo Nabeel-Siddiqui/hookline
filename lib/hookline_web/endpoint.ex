@@ -1,6 +1,8 @@
 defmodule HooklineWeb.Endpoint do
   use Phoenix.Endpoint, otp_app: :hookline
 
+  alias Hookline.Relay.Event
+
   # The session will be stored in the cookie and signed,
   # this means its contents can be read but not tampered with.
   # Set :encryption_salt if you would also like to encrypt it.
@@ -37,9 +39,16 @@ defmodule HooklineWeb.Endpoint do
   plug Plug.RequestId
   plug Plug.Telemetry, event_prefix: [:phoenix, :endpoint]
 
+  # length caps how much of a request body Plug.Parsers (and our
+  # body_reader below) will read before giving up, so an oversized
+  # webhook payload is rejected during the read itself rather than
+  # after being fully buffered into memory. See Relay.Event's own
+  # 256 KB limit, which this matches exactly.
   plug Plug.Parsers,
     parsers: [:urlencoded, :multipart, :json],
     pass: ["*/*"],
+    length: Event.max_body_bytes(),
+    body_reader: {HooklineWeb.CacheBodyReader, :read_body, []},
     json_decoder: Phoenix.json_library()
 
   plug Plug.MethodOverride

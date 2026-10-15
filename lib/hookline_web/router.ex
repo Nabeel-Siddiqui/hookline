@@ -17,10 +17,22 @@ defmodule HooklineWeb.Router do
     plug :accepts, ["json"]
   end
 
+  # Deliberately empty: the sender is a third-party service, not a
+  # browser, so there's no session to fetch and no CSRF token to check
+  # — the usual :browser pipeline would reject every legitimate webhook.
+  pipeline :webhook_receiver do
+  end
+
   scope "/", HooklineWeb do
     pipe_through :browser
 
     get "/", PageController, :home
+  end
+
+  scope "/in", HooklineWeb do
+    pipe_through :webhook_receiver
+
+    post "/:token", ReceiveController, :create
   end
 
   # Other scopes may use custom stacks.
