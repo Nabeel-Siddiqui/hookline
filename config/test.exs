@@ -42,3 +42,7 @@ config :phoenix_live_view,
 # Oban.Testing :manual mode: jobs are inserted but only run when a test
 # drains them explicitly.
 config :hookline, Oban, testing: :manual
+
+# The delivery worker's HTTP client is Mox-mocked in tests — nothing
+# in the suite ever makes a real network call to a destination.
+config :hookline, :http_client, Hookline.Relay.HttpClientMock

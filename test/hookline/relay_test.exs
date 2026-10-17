@@ -1,11 +1,12 @@
 defmodule Hookline.RelayTest do
   use Hookline.DataCase, async: true
+  use Oban.Testing, repo: Hookline.Repo
 
   import Hookline.AccountsFixtures
   import Hookline.RelayFixtures
 
   alias Hookline.Relay
-  alias Hookline.Relay.{Destination, Event}
+  alias Hookline.Relay.{DeliveryWorker, Destination, Event}
 
   describe "create_endpoint/2" do
     test "creates an endpoint with a generated public token" do
@@ -220,6 +221,61 @@ defmodule Hookline.RelayTest do
                })
 
       assert "is invalid" in errors_on(changeset).status
+    end
+  end
+
+  describe "enqueue_deliveries/1" do
+    test "enqueues one job per active destination on the event's endpoint" do
+      user = user_fixture()
+      endpoint = endpoint_fixture(user)
+      a = destination_fixture(user, endpoint, %{url: "https://a.example.com"})
+      b = destination_fixture(user, endpoint, %{url: "https://b.example.com"})
+      event = event_fixture(endpoint)
+
+      assert :ok = Relay.enqueue_deliveries(event)
+
+      assert_enqueued(worker: DeliveryWorker, args: %{event_id: event.id, destination_id: a.id})
+      assert_enqueued(worker: DeliveryWorker, args: %{event_id: event.id, destination_id: b.id})
+    end
+
+    test "skips an inactive destination" do
+      user = user_fixture()
+      endpoint = endpoint_fixture(user)
+      _inactive = destination_fixture(user, endpoint, %{active: false})
+      event = event_fixture(endpoint)
+
+      assert :ok = Relay.enqueue_deliveries(event)
+
+      refute_enqueued(worker: DeliveryWorker)
+    end
+
+    test "enqueues nothing for an endpoint with no destinations" do
+      endpoint = endpoint_fixture()
+      event = event_fixture(endpoint)
+
+      assert :ok = Relay.enqueue_deliveries(event)
+
+      refute_enqueued(worker: DeliveryWorker)
+    end
+  end
+
+  describe "get_event_for_delivery/1 and get_destination_for_delivery/1" do
+    test "find an event and a destination with no user needed" do
+      user = user_fixture()
+      endpoint = endpoint_fixture(user)
+      destination = destination_fixture(user, endpoint)
+      event = event_fixture(endpoint)
+
+      assert {:ok, found_event} = Relay.get_event_for_delivery(event.id)
+      assert found_event.id == event.id
+
+      assert {:ok, found_destination} = Relay.get_destination_for_delivery(destination.id)
+      assert found_destination.id == destination.id
+    end
+
+    test "return :not_found for an id that doesn't exist" do
+      assert {:error, :not_found} = Relay.get_event_for_delivery(999_999)
+      assert {:error, :not_found} = Relay.get_destination_for_delivery(999_999)
     end
   end
 end

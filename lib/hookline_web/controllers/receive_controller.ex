@@ -22,8 +22,12 @@ defmodule HooklineWeb.ReceiveController do
       }
 
       case Relay.record_event(endpoint, attrs) do
-        {:ok, _event} -> send_resp(conn, 200, "")
-        {:error, _changeset} -> send_resp(conn, 413, "payload too large")
+        {:ok, event} ->
+          :ok = Relay.enqueue_deliveries(event)
+          send_resp(conn, 200, "")
+
+        {:error, _changeset} ->
+          send_resp(conn, 413, "payload too large")
       end
     else
       {:error, :not_found} -> send_resp(conn, 404, "")

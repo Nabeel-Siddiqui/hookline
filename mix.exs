@@ -60,6 +60,8 @@ defmodule Hookline.MixProject do
       {:dns_cluster, "~> 0.1.1"},
       {:bandit, "~> 1.5"},
       {:oban, "~> 2.18"},
+      {:req, "~> 0.5"},
+      {:mox, "~> 1.1", only: :test},
 
       # Dev/test tooling
       {:credo, "~> 1.7", only: [:dev, :test], runtime: false},

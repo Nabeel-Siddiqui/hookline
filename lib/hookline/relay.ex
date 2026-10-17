@@ -11,7 +11,7 @@ defmodule Hookline.Relay do
   import Ecto.Query, warn: false
 
   alias Hookline.Accounts.User
-  alias Hookline.Relay.{DeliveryAttempt, Destination, Endpoint, Event}
+  alias Hookline.Relay.{DeliveryAttempt, DeliveryWorker, Destination, Endpoint, Event}
   alias Hookline.Repo
 
   @doc "Creates an endpoint owned by `user`. The public token is generated here."
@@ -92,6 +92,56 @@ defmodule Hookline.Relay do
     |> where([e], e.endpoint_id == ^endpoint.id)
     |> order_by([e], desc: e.received_at, desc: e.id)
     |> Repo.all()
+  end
+
+  @doc """
+  Fetches an event by id, with no user scoping. Used by `DeliveryWorker`,
+  which runs as a background job with no user in the picture — only the
+  id Oban was given when the job was enqueued.
+  """
+  @spec get_event_for_delivery(term()) :: {:ok, Event.t()} | {:error, :not_found}
+  def get_event_for_delivery(id) do
+    with {:ok, int_id} <- cast_id(id),
+         %Event{} = event <- Repo.get(Event, int_id) do
+      {:ok, event}
+    else
+      _ -> {:error, :not_found}
+    end
+  end
+
+  @doc "Fetches a destination by id, with no user scoping. Same reasoning as `get_event_for_delivery/1`."
+  @spec get_destination_for_delivery(term()) :: {:ok, Destination.t()} | {:error, :not_found}
+  def get_destination_for_delivery(id) do
+    with {:ok, int_id} <- cast_id(id),
+         %Destination{} = destination <- Repo.get(Destination, int_id) do
+      {:ok, destination}
+    else
+      _ -> {:error, :not_found}
+    end
+  end
+
+  @doc """
+  Enqueues a delivery job for `event` against every active destination
+  on its endpoint. Used both right after an event is captured, and to
+  replay a past event on demand — the same fan-out either way.
+  """
+  @spec enqueue_deliveries(Event.t()) :: :ok
+  def enqueue_deliveries(%Event{} = event) do
+    event = Repo.preload(event, endpoint: :destinations)
+
+    jobs =
+      for destination <- event.endpoint.destinations, destination.active do
+        DeliveryWorker.new(%{event_id: event.id, destination_id: destination.id})
+      end
+
+    # insert_all/1 is one bulk insert, not N individual ones each with
+    # its own result to check — there's no per-row changeset validation
+    # to fail here (the args are always valid, already-persisted ids),
+    # only a genuine infrastructure failure, which should raise rather
+    # than be swallowed by checking a result that's never meaningfully
+    # an {:error, _}.
+    Oban.insert_all(jobs)
+    :ok
   end
 
   @doc "Records one delivery attempt of `event` to `destination`."

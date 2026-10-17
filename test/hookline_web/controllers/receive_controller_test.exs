@@ -1,10 +1,12 @@
 defmodule HooklineWeb.ReceiveControllerTest do
   use HooklineWeb.ConnCase, async: true
+  use Oban.Testing, repo: Hookline.Repo
 
+  import Hookline.AccountsFixtures
   import Hookline.RelayFixtures
 
   alias Hookline.Relay
-  alias Hookline.Relay.Event
+  alias Hookline.Relay.{DeliveryWorker, Event}
 
   describe "POST /in/:token" do
     test "captures a JSON webhook exactly as sent and returns 200", %{conn: conn} do
@@ -60,6 +62,27 @@ defmodule HooklineWeb.ReceiveControllerTest do
       end
 
       assert Relay.list_events(endpoint) == []
+    end
+
+    test "enqueues a delivery for every active destination once the event is captured", %{
+      conn: conn
+    } do
+      user = user_fixture()
+      endpoint = endpoint_fixture(user)
+      destination = destination_fixture(user, endpoint)
+
+      conn =
+        conn
+        |> put_req_header("content-type", "application/json")
+        |> post(~p"/in/#{endpoint.token}", ~s({"ok": true}))
+
+      assert conn.status == 200
+      assert [event] = Relay.list_events(endpoint)
+
+      assert_enqueued(
+        worker: DeliveryWorker,
+        args: %{event_id: event.id, destination_id: destination.id}
+      )
     end
   end
 end
