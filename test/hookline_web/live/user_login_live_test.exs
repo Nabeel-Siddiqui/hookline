@@ -18,7 +18,7 @@ defmodule HooklineWeb.UserLoginLiveTest do
         conn
         |> log_in_user(user_fixture())
         |> live(~p"/users/log_in")
-        |> follow_redirect(conn, "/")
+        |> follow_redirect(conn, "/endpoints")
 
       assert {:ok, _conn} = result
     end
@@ -36,7 +36,7 @@ defmodule HooklineWeb.UserLoginLiveTest do
 
       conn = submit_form(form, conn)
 
-      assert redirected_to(conn) == ~p"/"
+      assert redirected_to(conn) == ~p"/endpoints"
     end
 
     test "redirects to login page with a flash error if there are no valid credentials", %{

@@ -17,7 +17,7 @@ defmodule HooklineWeb.UserRegistrationLiveTest do
         conn
         |> log_in_user(user_fixture())
         |> live(~p"/users/register")
-        |> follow_redirect(conn, "/")
+        |> follow_redirect(conn, "/endpoints")
 
       assert {:ok, _conn} = result
     end
@@ -45,7 +45,7 @@ defmodule HooklineWeb.UserRegistrationLiveTest do
       render_submit(form)
       conn = follow_trigger_action(form, conn)
 
-      assert redirected_to(conn) == ~p"/"
+      assert redirected_to(conn) == ~p"/endpoints"
 
       # Now do a logged in request and assert on the menu
       conn = get(conn, "/")

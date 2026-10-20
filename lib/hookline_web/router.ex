@@ -72,6 +72,11 @@ defmodule HooklineWeb.Router do
       on_mount: [{HooklineWeb.UserAuth, :ensure_authenticated}] do
       live "/users/settings", UserSettingsLive, :edit
       live "/users/settings/confirm_email/:token", UserSettingsLive, :confirm_email
+
+      live "/endpoints", EndpointLive.Index, :index
+      live "/endpoints/new", EndpointLive.Index, :new
+      live "/endpoints/:id", EndpointLive.Show, :show
+      live "/endpoints/:id/events/:event_id", EndpointLive.Event, :show
     end
   end
 

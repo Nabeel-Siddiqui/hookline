@@ -14,6 +14,12 @@ defmodule Hookline.Relay do
   alias Hookline.Relay.{DeliveryAttempt, DeliveryWorker, Destination, Endpoint, Event}
   alias Hookline.Repo
 
+  @doc "Returns a changeset for tracking a new endpoint's form changes, without persisting anything."
+  @spec create_endpoint_changeset(map()) :: Ecto.Changeset.t()
+  def create_endpoint_changeset(attrs \\ %{}) do
+    Endpoint.create_changeset(%Endpoint{}, attrs)
+  end
+
   @doc "Creates an endpoint owned by `user`. The public token is generated here."
   @spec create_endpoint(User.t(), map()) :: {:ok, Endpoint.t()} | {:error, Ecto.Changeset.t()}
   def create_endpoint(%User{} = user, attrs) do
@@ -54,6 +60,12 @@ defmodule Hookline.Relay do
     |> Repo.all()
   end
 
+  @doc "Returns a changeset for tracking a new destination's form changes, without persisting anything."
+  @spec create_destination_changeset(map()) :: Ecto.Changeset.t()
+  def create_destination_changeset(attrs \\ %{}) do
+    Destination.changeset(%Destination{}, attrs)
+  end
+
   @doc "Adds a destination to `endpoint`, scoped to `user`."
   @spec create_destination(User.t(), Endpoint.t(), map()) ::
           {:ok, Destination.t()} | {:error, Ecto.Changeset.t() | :not_found}
@@ -80,9 +92,11 @@ defmodule Hookline.Relay do
   """
   @spec record_event(Endpoint.t(), map()) :: {:ok, Event.t()} | {:error, Ecto.Changeset.t()}
   def record_event(%Endpoint{} = endpoint, attrs) do
-    %Event{endpoint_id: endpoint.id}
-    |> Event.changeset(attrs)
-    |> Repo.insert()
+    with {:ok, event} <-
+           %Event{endpoint_id: endpoint.id} |> Event.changeset(attrs) |> Repo.insert() do
+      broadcast(endpoint.id, {:event_captured, event})
+      {:ok, event}
+    end
   end
 
   @doc "Lists `endpoint`'s events, newest first."
@@ -92,6 +106,27 @@ defmodule Hookline.Relay do
     |> where([e], e.endpoint_id == ^endpoint.id)
     |> order_by([e], desc: e.received_at, desc: e.id)
     |> Repo.all()
+  end
+
+  @doc "Fetches an event by id, scoped to `endpoint`."
+  @spec get_event(Endpoint.t(), term()) :: {:ok, Event.t()} | {:error, :not_found}
+  def get_event(%Endpoint{} = endpoint, id) do
+    with {:ok, int_id} <- cast_id(id),
+         %Event{} = event <- Repo.get_by(Event, id: int_id, endpoint_id: endpoint.id) do
+      {:ok, event}
+    else
+      _ -> {:error, :not_found}
+    end
+  end
+
+  @doc """
+  Subscribes the caller to `endpoint`'s events: `{:event_captured, event}`
+  as each one is captured, and `{:attempt_recorded, attempt}` as each
+  delivery attempt for any of its events happens.
+  """
+  @spec subscribe_to_endpoint(Endpoint.t()) :: :ok | {:error, term()}
+  def subscribe_to_endpoint(%Endpoint{} = endpoint) do
+    Phoenix.PubSub.subscribe(Hookline.PubSub, endpoint_topic(endpoint.id))
   end
 
   @doc """
@@ -148,9 +183,13 @@ defmodule Hookline.Relay do
   @spec record_attempt(Event.t(), Destination.t(), map()) ::
           {:ok, DeliveryAttempt.t()} | {:error, Ecto.Changeset.t()}
   def record_attempt(%Event{} = event, %Destination{} = destination, attrs) do
-    %DeliveryAttempt{event_id: event.id, destination_id: destination.id}
-    |> DeliveryAttempt.changeset(attrs)
-    |> Repo.insert()
+    with {:ok, attempt} <-
+           %DeliveryAttempt{event_id: event.id, destination_id: destination.id}
+           |> DeliveryAttempt.changeset(attrs)
+           |> Repo.insert() do
+      broadcast(event.endpoint_id, {:attempt_recorded, attempt})
+      {:ok, attempt}
+    end
   end
 
   @doc "Lists the delivery attempts made for `event`, in the order they happened."
@@ -168,4 +207,10 @@ defmodule Hookline.Relay do
       _ -> :error
     end
   end
+
+  defp broadcast(endpoint_id, message) do
+    Phoenix.PubSub.broadcast(Hookline.PubSub, endpoint_topic(endpoint_id), message)
+  end
+
+  defp endpoint_topic(endpoint_id), do: "endpoint:#{endpoint_id}"
 end
