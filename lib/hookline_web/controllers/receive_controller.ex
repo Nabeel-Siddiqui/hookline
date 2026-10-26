@@ -1,9 +1,12 @@
 defmodule HooklineWeb.ReceiveController do
   @moduledoc """
   The public receiving URL: `POST /in/:token`. Captures the request
-  exactly as sent and stores it as an event. No authentication — the
-  token in the URL is the only credential a sender has, the same as any
-  webhook receiving URL (Stripe's, GitHub's, ...).
+  exactly as sent and stores it as an event. No authentication by
+  default — the token in the URL is the only credential a sender has,
+  the same as any webhook receiving URL (Stripe's, GitHub's, ...) —
+  but an endpoint with a signature header configured additionally
+  rejects anything whose signature doesn't match, before it's ever
+  stored. See `Hookline.Relay.valid_signature?/3`.
   """
 
   use HooklineWeb, :controller
@@ -13,10 +16,12 @@ defmodule HooklineWeb.ReceiveController do
 
   def create(conn, %{"token" => token}) do
     with {:ok, endpoint} <- Relay.get_endpoint_by_token(token),
-         {:ok, body, conn} <- raw_body(conn) do
+         {:ok, body, conn} <- raw_body(conn),
+         headers = Map.new(conn.req_headers),
+         true <- Relay.valid_signature?(endpoint, headers, body) do
       attrs = %{
         method: conn.method,
-        headers: Map.new(conn.req_headers),
+        headers: headers,
         body: body,
         received_at: DateTime.utc_now()
       }
@@ -32,6 +37,7 @@ defmodule HooklineWeb.ReceiveController do
     else
       {:error, :not_found} -> send_resp(conn, 404, "")
       {:error, :too_large, conn} -> send_resp(conn, 413, "payload too large")
+      false -> send_resp(conn, 401, "invalid signature")
     end
   end
 

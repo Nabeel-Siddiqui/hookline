@@ -72,6 +72,39 @@ defmodule HooklineWeb.EndpointLive.ShowTest do
       assert html =~ "POST"
     end
 
+    test "shows the signing secret and no verification by default", %{conn: conn, user: user} do
+      endpoint = endpoint_fixture(user)
+
+      {:ok, _view, html} = live(conn, ~p"/endpoints/#{endpoint}")
+
+      assert html =~ endpoint.signing_secret
+      assert html =~ "Not verifying"
+    end
+
+    test "setting a signature header turns verification on", %{conn: conn, user: user} do
+      endpoint = endpoint_fixture(user)
+      {:ok, view, _html} = live(conn, ~p"/endpoints/#{endpoint}")
+
+      view
+      |> form("#signature-form", endpoint: %{signature_header: "x-hub-signature-256"})
+      |> render_submit()
+
+      html = render(view)
+      assert html =~ "Verifying"
+      assert html =~ "x-hub-signature-256"
+    end
+
+    test "regenerating the secret replaces it", %{conn: conn, user: user} do
+      endpoint = endpoint_fixture(user)
+      {:ok, view, _html} = live(conn, ~p"/endpoints/#{endpoint}")
+      old_secret = endpoint.signing_secret
+
+      view |> element("button", "Regenerate") |> render_click()
+
+      html = render(view)
+      refute html =~ old_secret
+    end
+
     test "redirects to the endpoints list for another user's endpoint", %{conn: conn} do
       other = Hookline.AccountsFixtures.user_fixture()
       theirs = endpoint_fixture(other)

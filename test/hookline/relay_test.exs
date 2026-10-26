@@ -8,6 +8,12 @@ defmodule Hookline.RelayTest do
   alias Hookline.Relay
   alias Hookline.Relay.{DeliveryWorker, Destination, Event}
 
+  defp hex_hmac(secret, body) do
+    :hmac
+    |> :crypto.mac(:sha256, secret, body)
+    |> Base.encode16(case: :lower)
+  end
+
   describe "create_endpoint/2" do
     test "creates an endpoint with a generated public token" do
       user = user_fixture()
@@ -32,6 +38,22 @@ defmodule Hookline.RelayTest do
 
       assert {:error, changeset} = Relay.create_endpoint(user, %{})
       assert "can't be blank" in errors_on(changeset).name
+    end
+
+    test "also generates a signing secret, no header configured yet" do
+      endpoint = endpoint_fixture()
+
+      assert is_binary(endpoint.signing_secret)
+      assert byte_size(endpoint.signing_secret) >= 20
+      assert is_nil(endpoint.signature_header)
+    end
+
+    test "gives each endpoint a different signing secret" do
+      user = user_fixture()
+      a = endpoint_fixture(user)
+      b = endpoint_fixture(user)
+
+      refute a.signing_secret == b.signing_secret
     end
   end
 
@@ -79,6 +101,126 @@ defmodule Hookline.RelayTest do
       _theirs = endpoint_fixture(other, %{name: "Theirs"})
 
       assert Relay.list_endpoints(user) |> Enum.map(& &1.id) == [mine.id]
+    end
+  end
+
+  describe "update_endpoint_signature/3" do
+    test "sets the signature header, scoped to the owner" do
+      user = user_fixture()
+      endpoint = endpoint_fixture(user)
+
+      assert {:ok, updated} =
+               Relay.update_endpoint_signature(user, endpoint, %{
+                 signature_header: "x-hub-signature-256"
+               })
+
+      assert updated.signature_header == "x-hub-signature-256"
+    end
+
+    test "returns :not_found for another user's endpoint" do
+      owner = user_fixture()
+      other = user_fixture()
+      endpoint = endpoint_fixture(owner)
+
+      assert {:error, :not_found} =
+               Relay.update_endpoint_signature(other, endpoint, %{signature_header: "x-sig"})
+    end
+
+    test "clearing the header turns verification back off" do
+      user = user_fixture()
+      endpoint = endpoint_fixture(user)
+
+      {:ok, endpoint} =
+        Relay.update_endpoint_signature(user, endpoint, %{signature_header: "x-sig"})
+
+      assert {:ok, cleared} =
+               Relay.update_endpoint_signature(user, endpoint, %{signature_header: ""})
+
+      assert Relay.valid_signature?(cleared, %{}, "anything")
+    end
+  end
+
+  describe "regenerate_endpoint_signing_secret/2" do
+    test "replaces the secret, scoped to the owner" do
+      user = user_fixture()
+      endpoint = endpoint_fixture(user)
+
+      assert {:ok, regenerated} = Relay.regenerate_endpoint_signing_secret(user, endpoint)
+      refute regenerated.signing_secret == endpoint.signing_secret
+    end
+
+    test "returns :not_found for another user's endpoint" do
+      owner = user_fixture()
+      other = user_fixture()
+      endpoint = endpoint_fixture(owner)
+
+      assert {:error, :not_found} = Relay.regenerate_endpoint_signing_secret(other, endpoint)
+    end
+
+    test "the old secret no longer verifies anything, once the header is set" do
+      user = user_fixture()
+      endpoint = endpoint_fixture(user)
+
+      {:ok, endpoint} =
+        Relay.update_endpoint_signature(user, endpoint, %{signature_header: "x-sig"})
+
+      old_secret = endpoint.signing_secret
+      {:ok, regenerated} = Relay.regenerate_endpoint_signing_secret(user, endpoint)
+
+      signature = hex_hmac(old_secret, "body")
+      refute Relay.valid_signature?(regenerated, %{"x-sig" => signature}, "body")
+    end
+  end
+
+  describe "valid_signature?/3" do
+    test "passes through when no signature header is configured" do
+      endpoint = endpoint_fixture()
+
+      assert Relay.valid_signature?(endpoint, %{}, "anything")
+    end
+
+    test "accepts a matching signature in the configured header" do
+      user = user_fixture()
+      endpoint = endpoint_fixture(user)
+
+      {:ok, endpoint} =
+        Relay.update_endpoint_signature(user, endpoint, %{signature_header: "x-sig"})
+
+      signature = hex_hmac(endpoint.signing_secret, "the body")
+
+      assert Relay.valid_signature?(endpoint, %{"x-sig" => signature}, "the body")
+    end
+
+    test "is case-insensitive about the header name" do
+      user = user_fixture()
+      endpoint = endpoint_fixture(user)
+
+      {:ok, endpoint} =
+        Relay.update_endpoint_signature(user, endpoint, %{signature_header: "X-Sig"})
+
+      signature = hex_hmac(endpoint.signing_secret, "the body")
+
+      assert Relay.valid_signature?(endpoint, %{"x-sig" => signature}, "the body")
+    end
+
+    test "rejects a missing signature header" do
+      user = user_fixture()
+      endpoint = endpoint_fixture(user)
+
+      {:ok, endpoint} =
+        Relay.update_endpoint_signature(user, endpoint, %{signature_header: "x-sig"})
+
+      refute Relay.valid_signature?(endpoint, %{}, "the body")
+    end
+
+    test "rejects a wrong signature" do
+      user = user_fixture()
+      endpoint = endpoint_fixture(user)
+
+      {:ok, endpoint} =
+        Relay.update_endpoint_signature(user, endpoint, %{signature_header: "x-sig"})
+
+      refute Relay.valid_signature?(endpoint, %{"x-sig" => "sha256=deadbeef"}, "the body")
     end
   end
 

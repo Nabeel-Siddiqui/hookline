@@ -30,6 +30,10 @@ engineering hiring managers reviewing backend and reliability skills.
   history, and a Replay button to resend it on demand.
 - A body over 256 KB is rejected before it's ever fully read into
   memory, not after.
+- An endpoint can optionally require a signed request: configure which
+  header your sender puts its signature in, give the sender the
+  endpoint's signing secret, and anything without a matching signature
+  is rejected with a 401 before it's ever stored.
 
 ## Why Elixir for this, specifically
 
@@ -55,6 +59,12 @@ to what the BEAM and OTP are built for.
   payload is rejected before it's fully buffered into memory, not
   stored and then discarded.
   [ADR 3](docs/decisions/0003-body-size-cap-at-the-read.md)
+- **One generic HMAC scheme, not a per-provider integration.** A
+  signature header is verified with a constant-time HMAC-SHA256
+  comparison the user configures once per endpoint, rather than
+  Hookline trying to recognize and special-case every sender's own
+  format.
+  [ADR 4](docs/decisions/0004-generic-hmac-signatures-not-per-provider.md)
 
 ## Architecture
 
@@ -103,20 +113,21 @@ history to look at.
 To check the whole thing end to end:
 
 ```bash
-mix test                # 184 tests, no real network calls
+mix test                # 209 tests, no real network calls
 mix credo --strict
 mix dialyzer
 ```
 
 ## Design decisions
 
-Three of the less-obvious calls are written up in
+Four of the less-obvious calls are written up in
 [`docs/decisions/`](docs/decisions/), each with the alternative
 considered and why it lost:
 
 1. [The exact raw body is captured, not a re-serialized one](docs/decisions/0001-raw-body-capture.md)
 2. [Retries are Oban's own mechanism, one job per destination](docs/decisions/0002-retries-are-obans-own-mechanism.md)
 3. [The body size cap is enforced at the read, not after](docs/decisions/0003-body-size-cap-at-the-read.md)
+4. [Signature verification is one generic HMAC scheme, not per-provider](docs/decisions/0004-generic-hmac-signatures-not-per-provider.md)
 
 `CLAUDE.md` in the repo root has the conventions every phase of this
 build held to (contexts own all business logic, the web layer never
@@ -125,11 +136,12 @@ touches `Repo` directly, every public context function has `@doc` +
 
 ## What I'd do next
 
-- **Signature verification helpers.** The relay forwards a sender's own
-  signature header as-is, so a destination's existing verification
-  still works — but it doesn't verify the signature itself on the way
-  in. A per-endpoint shared secret and signature check would catch a
-  forged request before it's even stored.
+- **Stripe-style signature verification.** The current scheme covers
+  GitHub, Shopify, and anything else using a plain
+  `sha256=<hex HMAC of the body>` header. Stripe signs a timestamp
+  folded into the payload instead, for built-in replay protection — a
+  genuinely different scheme, not just a different header name. See
+  [ADR 4](docs/decisions/0004-generic-hmac-signatures-not-per-provider.md).
 - **Per-endpoint retry policy.** Every destination currently gets the
   same 5-attempts, doubling-backoff policy. Some integrations want more
   attempts over a longer window; making that configurable per endpoint

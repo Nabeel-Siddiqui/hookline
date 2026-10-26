@@ -8,6 +8,12 @@ defmodule HooklineWeb.ReceiveControllerTest do
   alias Hookline.Relay
   alias Hookline.Relay.{DeliveryWorker, Event}
 
+  defp hex_hmac(secret, body) do
+    :hmac
+    |> :crypto.mac(:sha256, secret, body)
+    |> Base.encode16(case: :lower)
+  end
+
   describe "POST /in/:token" do
     test "captures a JSON webhook exactly as sent and returns 200", %{conn: conn} do
       endpoint = endpoint_fixture()
@@ -83,6 +89,61 @@ defmodule HooklineWeb.ReceiveControllerTest do
         worker: DeliveryWorker,
         args: %{event_id: event.id, destination_id: destination.id}
       )
+    end
+
+    test "accepts a request with a valid signature, once a header is configured", %{conn: conn} do
+      user = user_fixture()
+      endpoint = endpoint_fixture(user)
+
+      {:ok, endpoint} =
+        Relay.update_endpoint_signature(user, endpoint, %{signature_header: "x-sig"})
+
+      body = ~s({"ok": true})
+      signature = "sha256=" <> hex_hmac(endpoint.signing_secret, body)
+
+      conn =
+        conn
+        |> put_req_header("content-type", "application/json")
+        |> put_req_header("x-sig", signature)
+        |> post(~p"/in/#{endpoint.token}", body)
+
+      assert conn.status == 200
+      assert [_event] = Relay.list_events(endpoint)
+    end
+
+    test "rejects a request with a missing signature, once a header is configured", %{
+      conn: conn
+    } do
+      user = user_fixture()
+      endpoint = endpoint_fixture(user)
+
+      {:ok, endpoint} =
+        Relay.update_endpoint_signature(user, endpoint, %{signature_header: "x-sig"})
+
+      conn =
+        conn
+        |> put_req_header("content-type", "application/json")
+        |> post(~p"/in/#{endpoint.token}", ~s({"ok": true}))
+
+      assert conn.status == 401
+      assert Relay.list_events(endpoint) == []
+    end
+
+    test "rejects a request with a wrong signature, and stores nothing", %{conn: conn} do
+      user = user_fixture()
+      endpoint = endpoint_fixture(user)
+
+      {:ok, endpoint} =
+        Relay.update_endpoint_signature(user, endpoint, %{signature_header: "x-sig"})
+
+      conn =
+        conn
+        |> put_req_header("content-type", "application/json")
+        |> put_req_header("x-sig", "sha256=deadbeef")
+        |> post(~p"/in/#{endpoint.token}", ~s({"ok": true}))
+
+      assert conn.status == 401
+      assert Relay.list_events(endpoint) == []
     end
   end
 end

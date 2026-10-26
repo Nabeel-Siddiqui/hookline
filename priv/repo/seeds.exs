@@ -43,6 +43,13 @@ if Relay.list_endpoints(user) == [] do
   {:ok, _github_dest} =
     Relay.create_destination(user, github, %{url: "https://example.com/hooks/github"})
 
+  # Shows off signature verification in the demo: configured here, but
+  # the seeded events below are written directly through record_event/2
+  # rather than the receiving URL, so they're never actually checked
+  # against it (same reasoning as skipping real deliveries, above).
+  {:ok, github} =
+    Relay.update_endpoint_signature(user, github, %{signature_header: "x-hub-signature-256"})
+
   now = DateTime.utc_now()
 
   stripe_events = [

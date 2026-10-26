@@ -23,6 +23,7 @@ defmodule HooklineWeb.EndpointLive.Show do
          |> assign(:page_title, endpoint.name)
          |> assign(:destinations, Relay.list_destinations(endpoint))
          |> assign(:destination_form, to_form(Relay.create_destination_changeset()))
+         |> assign(:signature_form, to_form(Relay.change_endpoint_signature(endpoint)))
          |> assign(:events_empty?, events == [])
          |> stream(:events, events)}
 
@@ -71,6 +72,49 @@ defmodule HooklineWeb.EndpointLive.Show do
       </:actions>
     </.simple_form>
 
+    <.header class="mt-10">
+      Signature verification
+      <:subtitle>
+        Optional. Set the header your sender puts its signature in, give the sender
+        the secret below, and anything that arrives without a matching signature is
+        rejected before it's ever stored.
+      </:subtitle>
+    </.header>
+
+    <p class="text-sm">
+      Signing secret: <code :if={@endpoint.signing_secret}>{@endpoint.signing_secret}</code>
+      <span :if={is_nil(@endpoint.signing_secret)} class="text-zinc-500">
+        none yet — regenerate to create one
+      </span>
+      <.button phx-click="regenerate_secret">Regenerate</.button>
+    </p>
+
+    <.simple_form
+      for={@signature_form}
+      id="signature-form"
+      phx-submit="update_signature_header"
+      class="mt-4"
+    >
+      <.input
+        field={@signature_form[:signature_header]}
+        type="text"
+        label="Signature header"
+        placeholder="x-hub-signature-256"
+      />
+      <:actions>
+        <.button phx-disable-with="Saving...">Save</.button>
+      </:actions>
+    </.simple_form>
+
+    <p class="mt-2 text-sm text-zinc-500">
+      <%= if @endpoint.signature_header do %>
+        Verifying every request's <code>{@endpoint.signature_header}</code>
+        header against the secret above.
+      <% else %>
+        Not verifying — any request with the right URL is accepted, same as before.
+      <% end %>
+    </p>
+
     <.header class="mt-10">Events</.header>
     <.table id="events" rows={@streams.events}>
       <:col :let={{_id, event}} label="Received">
@@ -105,6 +149,39 @@ defmodule HooklineWeb.EndpointLive.Show do
       {:error, changeset} ->
         {:noreply, assign(socket, :destination_form, to_form(changeset))}
     end
+  end
+
+  @impl true
+  def handle_event("update_signature_header", %{"endpoint" => params}, socket) do
+    case Relay.update_endpoint_signature(
+           socket.assigns.current_user,
+           socket.assigns.endpoint,
+           params
+         ) do
+      {:ok, endpoint} ->
+        {:noreply,
+         socket
+         |> assign(:endpoint, endpoint)
+         |> assign(:signature_form, to_form(Relay.change_endpoint_signature(endpoint)))
+         |> put_flash(:info, "Signature header updated")}
+
+      {:error, changeset} ->
+        {:noreply, assign(socket, :signature_form, to_form(changeset))}
+    end
+  end
+
+  @impl true
+  def handle_event("regenerate_secret", _params, socket) do
+    {:ok, endpoint} =
+      Relay.regenerate_endpoint_signing_secret(
+        socket.assigns.current_user,
+        socket.assigns.endpoint
+      )
+
+    {:noreply,
+     socket
+     |> assign(:endpoint, endpoint)
+     |> put_flash(:info, "Signing secret regenerated")}
   end
 
   @impl true

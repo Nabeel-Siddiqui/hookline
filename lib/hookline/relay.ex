@@ -11,7 +11,16 @@ defmodule Hookline.Relay do
   import Ecto.Query, warn: false
 
   alias Hookline.Accounts.User
-  alias Hookline.Relay.{DeliveryAttempt, DeliveryWorker, Destination, Endpoint, Event}
+
+  alias Hookline.Relay.{
+    DeliveryAttempt,
+    DeliveryWorker,
+    Destination,
+    Endpoint,
+    Event,
+    SignatureVerifier
+  }
+
   alias Hookline.Repo
 
   @doc "Returns a changeset for tracking a new endpoint's form changes, without persisting anything."
@@ -58,6 +67,66 @@ defmodule Hookline.Relay do
     |> where([e], e.user_id == ^user.id)
     |> order_by([e], desc: e.inserted_at, desc: e.id)
     |> Repo.all()
+  end
+
+  @doc "Returns a changeset for editing `endpoint`'s signature header, without persisting anything."
+  @spec change_endpoint_signature(Endpoint.t(), map()) :: Ecto.Changeset.t()
+  def change_endpoint_signature(%Endpoint{} = endpoint, attrs \\ %{}) do
+    Endpoint.signature_changeset(endpoint, attrs)
+  end
+
+  @doc """
+  Updates which header `endpoint` expects a sender's signature in,
+  scoped to `user`. Setting it to a blank value turns verification
+  back off for this endpoint.
+  """
+  @spec update_endpoint_signature(User.t(), Endpoint.t(), map()) ::
+          {:ok, Endpoint.t()} | {:error, Ecto.Changeset.t() | :not_found}
+  def update_endpoint_signature(%User{} = user, %Endpoint{} = endpoint, attrs) do
+    with {:ok, endpoint} <- get_endpoint(user, endpoint.id) do
+      endpoint
+      |> Endpoint.signature_changeset(attrs)
+      |> Repo.update()
+    end
+  end
+
+  @doc """
+  Regenerates `endpoint`'s signing secret, scoped to `user`. The old
+  secret stops verifying anything immediately — any sender still using
+  it starts failing verification until it's given the new one.
+  """
+  @spec regenerate_endpoint_signing_secret(User.t(), Endpoint.t()) ::
+          {:ok, Endpoint.t()} | {:error, Ecto.Changeset.t() | :not_found}
+  def regenerate_endpoint_signing_secret(%User{} = user, %Endpoint{} = endpoint) do
+    with {:ok, endpoint} <- get_endpoint(user, endpoint.id) do
+      endpoint
+      |> Endpoint.regenerate_signing_secret_changeset()
+      |> Repo.update()
+    end
+  end
+
+  @doc """
+  Whether `raw_body` carries a valid signature for `endpoint`, given
+  the request's `headers` (a map, the same shape `record_event/2`
+  stores). An endpoint with no `signature_header` configured has
+  verification turned off entirely, so this always returns `true` —
+  the same "nothing configured, let it through" behavior every
+  endpoint had before this feature existed.
+  """
+  @spec valid_signature?(Endpoint.t(), map(), binary()) :: boolean()
+  def valid_signature?(%Endpoint{signature_header: header}, _headers, _body)
+      when header in [nil, ""],
+      do: true
+
+  def valid_signature?(%Endpoint{signing_secret: nil}, _headers, _body), do: false
+
+  def valid_signature?(%Endpoint{} = endpoint, headers, body) when is_map(headers) do
+    header_name = String.downcase(endpoint.signature_header)
+
+    case Map.fetch(headers, header_name) do
+      {:ok, signature} -> SignatureVerifier.verify?(endpoint.signing_secret, signature, body)
+      :error -> false
+    end
   end
 
   @doc "Returns a changeset for tracking a new destination's form changes, without persisting anything."
