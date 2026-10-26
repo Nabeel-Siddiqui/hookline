@@ -105,6 +105,42 @@ defmodule HooklineWeb.EndpointLive.ShowTest do
       refute html =~ old_secret
     end
 
+    test "filtering by method hides events that don't match", %{conn: conn, user: user} do
+      endpoint = endpoint_fixture(user)
+      _post = event_fixture(endpoint, %{method: "POST"})
+      _put = event_fixture(endpoint, %{method: "PUT"})
+
+      {:ok, view, html} = live(conn, ~p"/endpoints/#{endpoint}")
+      assert count_occurrences(html, "View") == 2
+
+      html =
+        view
+        |> form("#event-filters", filters: %{method: "POST"})
+        |> render_change()
+
+      assert count_occurrences(html, "View") == 1
+      refute html =~ "No events match these filters."
+    end
+
+    test "a live-captured event respects the active filter", %{conn: conn, user: user} do
+      endpoint = endpoint_fixture(user)
+      {:ok, view, _html} = live(conn, ~p"/endpoints/#{endpoint}")
+
+      view
+      |> form("#event-filters", filters: %{method: "PUT"})
+      |> render_change()
+
+      {:ok, _event} =
+        Relay.record_event(endpoint, %{
+          method: "POST",
+          headers: %{},
+          body: "won't match the filter",
+          received_at: DateTime.utc_now()
+        })
+
+      assert render(view) =~ "No events match these filters."
+    end
+
     test "redirects to the endpoints list for another user's endpoint", %{conn: conn} do
       other = Hookline.AccountsFixtures.user_fixture()
       theirs = endpoint_fixture(other)
@@ -116,5 +152,9 @@ defmodule HooklineWeb.EndpointLive.ShowTest do
     test "redirects for a nonexistent endpoint", %{conn: conn} do
       assert {:error, {:live_redirect, %{to: "/endpoints"}}} = live(conn, ~p"/endpoints/999999")
     end
+  end
+
+  defp count_occurrences(haystack, needle) do
+    haystack |> String.split(needle) |> length() |> Kernel.-(1)
   end
 end

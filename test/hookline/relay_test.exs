@@ -322,6 +322,133 @@ defmodule Hookline.RelayTest do
     end
   end
 
+  describe "list_events/2 filters" do
+    test "filters by method" do
+      endpoint = endpoint_fixture()
+      post = event_fixture(endpoint, %{method: "POST"})
+      _put = event_fixture(endpoint, %{method: "PUT"})
+
+      assert Relay.list_events(endpoint, %{"method" => "POST"}) |> Enum.map(& &1.id) == [post.id]
+    end
+
+    test "a blank method filters nothing out" do
+      endpoint = endpoint_fixture()
+      _event = event_fixture(endpoint)
+
+      assert length(Relay.list_events(endpoint, %{"method" => ""})) == 1
+    end
+
+    test "filters by an inclusive date range" do
+      endpoint = endpoint_fixture()
+      _too_early = event_fixture(endpoint, %{received_at: ~U[2026-01-01 10:00:00Z]})
+      in_range = event_fixture(endpoint, %{received_at: ~U[2026-01-02 10:00:00Z]})
+      _too_late = event_fixture(endpoint, %{received_at: ~U[2026-01-03 10:00:00Z]})
+
+      found =
+        Relay.list_events(endpoint, %{"from" => "2026-01-02", "to" => "2026-01-02"})
+
+      assert Enum.map(found, & &1.id) == [in_range.id]
+    end
+
+    test "an invalid date is ignored rather than raising" do
+      endpoint = endpoint_fixture()
+      event = event_fixture(endpoint)
+
+      assert Relay.list_events(endpoint, %{"from" => "not-a-date"}) |> Enum.map(& &1.id) == [
+               event.id
+             ]
+    end
+
+    test "filters by delivery status: delivered" do
+      user = user_fixture()
+      endpoint = endpoint_fixture(user)
+      destination = destination_fixture(user, endpoint)
+      delivered = event_fixture(endpoint)
+      _pending = event_fixture(endpoint)
+
+      {:ok, _attempt} =
+        Relay.record_attempt(delivered, destination, %{
+          attempt_number: 1,
+          status: :succeeded,
+          response_code: 200,
+          attempted_at: DateTime.utc_now()
+        })
+
+      assert Relay.list_events(endpoint, %{"status" => "delivered"}) |> Enum.map(& &1.id) == [
+               delivered.id
+             ]
+    end
+
+    test "filters by delivery status: failed (and not also succeeded)" do
+      user = user_fixture()
+      endpoint = endpoint_fixture(user)
+      destination = destination_fixture(user, endpoint)
+      failed = event_fixture(endpoint)
+      recovered = event_fixture(endpoint)
+
+      {:ok, _} =
+        Relay.record_attempt(failed, destination, %{
+          attempt_number: 1,
+          status: :failed,
+          response_code: 503,
+          attempted_at: DateTime.utc_now()
+        })
+
+      {:ok, _} =
+        Relay.record_attempt(recovered, destination, %{
+          attempt_number: 1,
+          status: :failed,
+          response_code: 503,
+          attempted_at: DateTime.utc_now()
+        })
+
+      {:ok, _} =
+        Relay.record_attempt(recovered, destination, %{
+          attempt_number: 2,
+          status: :succeeded,
+          response_code: 200,
+          attempted_at: DateTime.utc_now()
+        })
+
+      assert Relay.list_events(endpoint, %{"status" => "failed"}) |> Enum.map(& &1.id) == [
+               failed.id
+             ]
+    end
+
+    test "filters by delivery status: pending (no attempts yet)" do
+      user = user_fixture()
+      endpoint = endpoint_fixture(user)
+      destination = destination_fixture(user, endpoint)
+      pending = event_fixture(endpoint)
+      attempted = event_fixture(endpoint)
+
+      {:ok, _} =
+        Relay.record_attempt(attempted, destination, %{
+          attempt_number: 1,
+          status: :succeeded,
+          response_code: 200,
+          attempted_at: DateTime.utc_now()
+        })
+
+      assert Relay.list_events(endpoint, %{"status" => "pending"}) |> Enum.map(& &1.id) == [
+               pending.id
+             ]
+    end
+
+    test "combines multiple filters" do
+      endpoint = endpoint_fixture()
+      match = event_fixture(endpoint, %{method: "POST", received_at: ~U[2026-01-02 10:00:00Z]})
+
+      _wrong_method =
+        event_fixture(endpoint, %{method: "PUT", received_at: ~U[2026-01-02 10:00:00Z]})
+
+      found =
+        Relay.list_events(endpoint, %{"method" => "POST", "from" => "2026-01-02"})
+
+      assert Enum.map(found, & &1.id) == [match.id]
+    end
+  end
+
   describe "delivery attempts" do
     test "records attempts for an event and lists them in order" do
       user = user_fixture()

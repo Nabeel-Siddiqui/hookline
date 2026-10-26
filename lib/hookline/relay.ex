@@ -168,14 +168,99 @@ defmodule Hookline.Relay do
     end
   end
 
-  @doc "Lists `endpoint`'s events, newest first."
-  @spec list_events(Endpoint.t()) :: [Event.t()]
-  def list_events(%Endpoint{} = endpoint) do
-    Event
+  @doc """
+  Lists `endpoint`'s events, newest first, optionally narrowed by
+  `filters`. Every key is optional; an empty or missing one is simply
+  skipped, so `list_events(endpoint)` behaves exactly as it always has.
+
+    * `"method"` — exact match against the captured HTTP method.
+    * `"from"` / `"to"` — inclusive date range (`Date.t()` or an
+      ISO-8601 string) against `received_at`.
+    * `"status"` — `"delivered"` (at least one succeeded delivery
+      attempt), `"failed"` (at least one failed attempt and no
+      succeeded one), or `"pending"` (no attempts recorded at all).
+  """
+  @spec list_events(Endpoint.t(), map()) :: [Event.t()]
+  def list_events(%Endpoint{} = endpoint, filters \\ %{}) do
+    from(e in Event, as: :event)
     |> where([e], e.endpoint_id == ^endpoint.id)
+    |> filter_by_method(Map.get(filters, "method"))
+    |> filter_by_date_range(Map.get(filters, "from"), Map.get(filters, "to"))
+    |> filter_by_status(Map.get(filters, "status"))
     |> order_by([e], desc: e.received_at, desc: e.id)
     |> Repo.all()
   end
+
+  defp filter_by_method(query, method) when method in [nil, ""], do: query
+  defp filter_by_method(query, method), do: where(query, [e], e.method == ^method)
+
+  defp filter_by_date_range(query, from, to) do
+    query
+    |> filter_from(parse_date(from))
+    |> filter_to(parse_date(to))
+  end
+
+  defp filter_from(query, nil), do: query
+
+  defp filter_from(query, %Date{} = date) do
+    where(query, [e], e.received_at >= ^DateTime.new!(date, ~T[00:00:00]))
+  end
+
+  defp filter_to(query, nil), do: query
+
+  defp filter_to(query, %Date{} = date) do
+    where(query, [e], e.received_at < ^DateTime.new!(Date.add(date, 1), ~T[00:00:00]))
+  end
+
+  defp parse_date(%Date{} = date), do: date
+
+  defp parse_date(date) when is_binary(date) and date != "" do
+    case Date.from_iso8601(date) do
+      {:ok, parsed} -> parsed
+      {:error, _reason} -> nil
+    end
+  end
+
+  defp parse_date(_date), do: nil
+
+  defp filter_by_status(query, "delivered") do
+    where(
+      query,
+      [e],
+      exists(
+        from a in DeliveryAttempt,
+          where: a.event_id == parent_as(:event).id and a.status == :succeeded
+      )
+    )
+  end
+
+  defp filter_by_status(query, "failed") do
+    query
+    |> where(
+      [e],
+      exists(
+        from a in DeliveryAttempt,
+          where: a.event_id == parent_as(:event).id and a.status == :failed
+      )
+    )
+    |> where(
+      [e],
+      not exists(
+        from a in DeliveryAttempt,
+          where: a.event_id == parent_as(:event).id and a.status == :succeeded
+      )
+    )
+  end
+
+  defp filter_by_status(query, "pending") do
+    where(
+      query,
+      [e],
+      not exists(from a in DeliveryAttempt, where: a.event_id == parent_as(:event).id)
+    )
+  end
+
+  defp filter_by_status(query, _status), do: query
 
   @doc "Fetches an event by id, scoped to `endpoint`."
   @spec get_event(Endpoint.t(), term()) :: {:ok, Event.t()} | {:error, :not_found}

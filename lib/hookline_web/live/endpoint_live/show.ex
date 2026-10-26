@@ -15,7 +15,8 @@ defmodule HooklineWeb.EndpointLive.Show do
       {:ok, endpoint} ->
         if connected?(socket), do: Relay.subscribe_to_endpoint(endpoint)
 
-        events = Relay.list_events(endpoint)
+        filters = %{}
+        events = Relay.list_events(endpoint, filters)
 
         {:ok,
          socket
@@ -24,6 +25,8 @@ defmodule HooklineWeb.EndpointLive.Show do
          |> assign(:destinations, Relay.list_destinations(endpoint))
          |> assign(:destination_form, to_form(Relay.create_destination_changeset()))
          |> assign(:signature_form, to_form(Relay.change_endpoint_signature(endpoint)))
+         |> assign(:filters, filters)
+         |> assign(:filter_form, to_form(filters, as: :filters))
          |> assign(:events_empty?, events == [])
          |> stream(:events, events)}
 
@@ -116,6 +119,38 @@ defmodule HooklineWeb.EndpointLive.Show do
     </p>
 
     <.header class="mt-10">Events</.header>
+
+    <.simple_form for={@filter_form} id="event-filters" phx-change="filter">
+      <div class="flex gap-4">
+        <.input
+          field={@filter_form[:method]}
+          type="select"
+          label="Method"
+          options={[
+            {"Any", ""},
+            {"GET", "GET"},
+            {"POST", "POST"},
+            {"PUT", "PUT"},
+            {"PATCH", "PATCH"},
+            {"DELETE", "DELETE"}
+          ]}
+        />
+        <.input
+          field={@filter_form[:status]}
+          type="select"
+          label="Delivery status"
+          options={[
+            {"Any", ""},
+            {"Delivered", "delivered"},
+            {"Failed", "failed"},
+            {"No attempts yet", "pending"}
+          ]}
+        />
+        <.input field={@filter_form[:from]} type="date" label="From" />
+        <.input field={@filter_form[:to]} type="date" label="To" />
+      </div>
+    </.simple_form>
+
     <.table id="events" rows={@streams.events}>
       <:col :let={{_id, event}} label="Received">
         {Calendar.strftime(event.received_at, "%H:%M:%S")}
@@ -126,8 +161,11 @@ defmodule HooklineWeb.EndpointLive.Show do
         <.link navigate={~p"/endpoints/#{@endpoint}/events/#{event}"}>View</.link>
       </:action>
     </.table>
-    <p :if={@events_empty?} class="mt-4 text-sm text-zinc-500">
+    <p :if={@events_empty? and not filters_active?(@filters)} class="mt-4 text-sm text-zinc-500">
       No events yet. POST anything to the receiving URL above.
+    </p>
+    <p :if={@events_empty? and filters_active?(@filters)} class="mt-4 text-sm text-zinc-500">
+      No events match these filters.
     </p>
     """
   end
@@ -171,6 +209,18 @@ defmodule HooklineWeb.EndpointLive.Show do
   end
 
   @impl true
+  def handle_event("filter", %{"filters" => filters}, socket) do
+    events = Relay.list_events(socket.assigns.endpoint, filters)
+
+    {:noreply,
+     socket
+     |> assign(:filters, filters)
+     |> assign(:filter_form, to_form(filters, as: :filters))
+     |> assign(:events_empty?, events == [])
+     |> stream(:events, events, reset: true)}
+  end
+
+  @impl true
   def handle_event("regenerate_secret", _params, socket) do
     {:ok, endpoint} =
       Relay.regenerate_endpoint_signing_secret(
@@ -184,13 +234,28 @@ defmodule HooklineWeb.EndpointLive.Show do
      |> put_flash(:info, "Signing secret regenerated")}
   end
 
+  # A live-captured event only gets inserted into the visible stream if
+  # it matches the current filters — re-running the same list_events/2
+  # query is simpler than writing a second, in-memory predicate that
+  # would have to stay in sync with the database one.
   @impl true
   def handle_info({:event_captured, event}, socket) do
-    {:noreply,
-     socket
-     |> assign(:events_empty?, false)
-     |> stream_insert(:events, event, at: 0)}
+    endpoint = socket.assigns.endpoint
+    filters = socket.assigns.filters
+
+    if event.id in Enum.map(Relay.list_events(endpoint, filters), & &1.id) do
+      {:noreply,
+       socket
+       |> assign(:events_empty?, false)
+       |> stream_insert(:events, event, at: 0)}
+    else
+      {:noreply, socket}
+    end
   end
 
   def handle_info({:attempt_recorded, _attempt}, socket), do: {:noreply, socket}
+
+  defp filters_active?(filters) do
+    Enum.any?(filters, fn {_key, value} -> value not in [nil, ""] end)
+  end
 end

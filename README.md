@@ -28,6 +28,9 @@ engineering hiring managers reviewing backend and reliability skills.
 - A dashboard lists endpoints and their events live as they arrive, and
   an event's detail page shows its full headers and body, its delivery
   history, and a Replay button to resend it on demand.
+- Events can be filtered live by method, delivery status (delivered,
+  failed, or no attempts yet), and a date range — a live-captured event
+  only appears if it matches whatever filter is currently active.
 - A body over 256 KB is rejected before it's ever fully read into
   memory, not after.
 - An endpoint can optionally require a signed request: configure which
@@ -113,7 +116,7 @@ history to look at.
 To check the whole thing end to end:
 
 ```bash
-mix test                # 209 tests, no real network calls
+mix test                # 219 tests, no real network calls
 mix credo --strict
 mix dialyzer
 ```
@@ -128,6 +131,10 @@ considered and why it lost:
 2. [Retries are Oban's own mechanism, one job per destination](docs/decisions/0002-retries-are-obans-own-mechanism.md)
 3. [The body size cap is enforced at the read, not after](docs/decisions/0003-body-size-cap-at-the-read.md)
 4. [Signature verification is one generic HMAC scheme, not per-provider](docs/decisions/0004-generic-hmac-signatures-not-per-provider.md)
+
+Event filtering (method, delivery status, date range) didn't earn its
+own ADR — it's a straightforward `WHERE`/`EXISTS` narrowing of an
+existing query, not a decision with a real alternative that lost.
 
 `CLAUDE.md` in the repo root has the conventions every phase of this
 build held to (contexts own all business logic, the web layer never
@@ -146,9 +153,6 @@ touches `Repo` directly, every public context function has `@doc` +
   same 5-attempts, doubling-backoff policy. Some integrations want more
   attempts over a longer window; making that configurable per endpoint
   is a natural extension of the existing worker.
-- **Filtering and search on the events list.** The dashboard shows every
-  event newest-first; filtering by date range, method, or delivery
-  status would matter quickly once an endpoint has real volume.
 - **A real multi-node run.** The delivery and capture paths don't share
   any node-local state, so they should already work across multiple
   nodes — but, like the rest of this series, that's only ever actually
